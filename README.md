@@ -8,9 +8,9 @@ Current size: **912 bytes**.
 
 ![Bart calls smallest-editor--so-far.exe the smallest Windows 11 editor. Homer replies: So far.](smallest-editor-so-far.jpeg)
 
-## What counts as an editor?
+## Requirements
 
-- R1. Editor can load and save a text file. User selects file name.
+- R1. Editor can load and save a text file below a defined size. User selects file name.
 - R2. The user edits text in a window: typing inserts characters at the caret, and the arrow, Backspace, and Delete keys move the caret and remove characters.
 - R3. The executable runs on a stock 64-bit Windows 11 installation without any other file installed first.
 
@@ -23,7 +23,7 @@ The title bar shows the full path chosen at startup.
 
 Edit the text and press **Ctrl+S** to save. If saving fails, the file selector opens again so you can choose another path; Cancel returns to editing. Closing the window exits without saving or prompting.
 
-Files larger than 3,145,727 bytes are refused with a message box rather than opened truncated, so a save cannot overwrite a file with a shortened copy.
+Files larger than 3,145,727 bytes are refused.
 
 ## How it stays small
 
