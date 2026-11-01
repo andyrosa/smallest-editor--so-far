@@ -9,7 +9,7 @@
  *
  * This file is the whole executable: clang assembles it, and the build script
  * copies the bytes of its .text section to smallest-editor--so-far.exe, with
- * no linker. The PE headers and the import tables below are written by hand,
+ * no linker. The PE headers and the import tables below are written by bot-hand,
  * so they carry no padding and no import lookup table. The image has one
  * section, at 16-byte alignment, so every RVA is also a file offset. An
  * address in the code is written as IB + (label - base), which the assembler
