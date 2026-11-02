@@ -4,7 +4,7 @@ This repo is vibespired by Atto, the tiny (~48 KB) terminal-based text editor ad
 
 The goal is the **smallest possible Windows text editor**, measured in bytes of the complete executable.
 
-Current size: **912 bytes**.
+Current size: **1152 bytes**.
 
 ![Bart calls smallest-editor--so-far.exe the smallest Windows 11 editor. Homer replies: So far.](smallest-editor-so-far.jpeg)
 
@@ -17,13 +17,31 @@ Current size: **912 bytes**.
 
 ## Use
 
-Run `smallest-editor--so-far.exe`. In the opening file selector, choose an existing file or type a new name to start empty. Cancel exits.
+The editor has no menus, no keyboard shortcuts of its own, and no Save command. It loads one file at start and saves it automatically.
 
-The title bar shows the full path chosen at startup.
+### Load
 
-Edit the text and press **Ctrl+S** to save. If saving fails, the file selector opens again so you can choose another path; Cancel returns to editing. Closing the window exits without saving or prompting.
+Run `smallest-editor--so-far.exe`. A file selector opens:
 
-Files larger than 3,145,727 bytes are refused.
+- Choosing an existing file loads its bytes into the window.
+- Typing a name that does not exist opens an empty window. The editor creates the file at the first save, so a new name that is never edited leaves no file behind.
+- Cancel ends the editor.
+
+The title bar shows the full path chosen at startup. A file larger than 1,048,575 bytes is refused: the editor shows an "Error" message box and ends without changing the file.
+
+### Edit
+
+The window is a standard Windows edit box. Typing inserts text at the caret; the arrow keys, Home, End, Page Up, and Page Down move the caret; Backspace and Delete remove characters. Ctrl+C, Ctrl+X, Ctrl+V, and Ctrl+Z copy, cut, paste, and undo, and a right-click opens the same commands in a menu. The text can grow to 1,048,575 bytes.
+
+### Save automatically
+
+The editor saves the whole text to the file 1 second after the last change. Continuous typing postpones the save until a 1-second pause. Opening a file and only reading or moving the caret never writes it.
+
+Closing the window by any route (the title bar's close button, Alt+F4, the window menu, or the taskbar) first saves a change that the 1-second pause has not saved yet, then ends the editor.
+
+### Save failure
+
+When the file cannot be written, for example because it is read-only, the file selector opens again. Choosing a path saves the text there, and later saves go to that path. Cancel returns to editing without saving; the next change tries the save again.
 
 ## How it stays small
 
@@ -33,17 +51,19 @@ Windows supplies the editing through a single built-in `EDIT` control. The progr
 
 ## Build and test
 
-Install clang from LLVM MinGW and make sure it is on `PATH`:
+Install clang from LLVM MinGW, or MinGW-w64 GCC such as WinLibs, and make sure it is on `PATH`:
 
 ```powershell
 winget install --id MartinStorsjo.LLVM-MinGW.UCRT
+winget install --id BrechtSanders.WinLibs.POSIX.UCRT
 ```
 
-Then build and test from PowerShell:
+Then build and test from PowerShell. The build uses clang unless `-Compiler gcc` is given:
 
 ```powershell
-.\Build-Editor.ps1
+.\Build-Editor.ps1                # clang
+.\Build-Editor.ps1 -Compiler gcc  # gcc
 .\Test-Editor.ps1
 ```
 
-The build writes `smallest-editor--so-far.exe` and prints its byte count. The test script drives the editor with Win32 messages through 23 checks covering file selection, editing, saving, failed-save recovery, process exit, a 1,000,000-byte file, and a 5,000,000-byte file that the editor refuses.
+The build writes `smallest-editor--so-far.exe` and prints its byte count. The test script drives the editor with Win32 messages through 27 checks covering file selection, editing, saving after a pause and on close, failed-save recovery, process exit, a 1,000,000-byte file, and a 5,000,000-byte file that the editor refuses.

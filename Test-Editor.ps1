@@ -1,6 +1,7 @@
 # Drives an editor executable through Win32 messages, as the README describes:
 # start it, choose the file in the file selector, find its EDIT window, type
-# with WM_CHAR and WM_KEYDOWN, and save with WM_CHAR 0x13 (Ctrl+S).
+# with WM_CHAR and WM_KEYDOWN, and wait for the save that follows a pause in
+# changes, or close the window, which saves a change not saved yet.
 # The file selector is a window of class #32770; the script fills in its
 # file-name box (class Edit, control ID 1148 or 1001) with WM_SETTEXT and
 # presses Open or Cancel with WM_COMMAND.
@@ -84,9 +85,16 @@ function Wait-FileSelector($process) {
     return [IntPtr]::Zero
 }
 
+# The file-name box can appear more than 700 ms after the file selector
+# (Windows 10 19045, 2026-11-02: 3 of 4 runs of the committed test), so the
+# script looks for it for up to 5 seconds.
 function Select-InFileSelector([IntPtr] $dialog, [string] $path) {
-    $name = [W]::FindChild($dialog, 'Edit', 1148)
-    if ($name -eq [IntPtr]::Zero) { $name = [W]::FindChild($dialog, 'Edit', 1001) }
+    $name = [IntPtr]::Zero
+    for ($attempt = 0; $attempt -lt 50 -and $name -eq [IntPtr]::Zero; $attempt++) {
+        $name = [W]::FindChild($dialog, 'Edit', 1148)
+        if ($name -eq [IntPtr]::Zero) { $name = [W]::FindChild($dialog, 'Edit', 1001) }
+        if ($name -eq [IntPtr]::Zero) { Start-Sleep -Milliseconds 100 }
+    }
     if ($name -eq [IntPtr]::Zero) { throw 'the file selector has no file-name box' }
     [void][W]::SendMessageA($name, 0x000C, [IntPtr]::Zero, $path)        # WM_SETTEXT
     [void][W]::PostMessageA($dialog, 0x0111, [IntPtr]1, [IntPtr]::Zero)  # WM_COMMAND IDOK
@@ -141,14 +149,24 @@ function Wait-MessageBox($process) {
     return [IntPtr]::Zero
 }
 
-function Save-Editor([IntPtr] $handle) {
-    [W]::Type($handle, [string][char]0x13)
-    Start-Sleep -Milliseconds 500
+# The editor saves DELAY (1000) milliseconds after the last change.
+$saveWaitMilliseconds = 1500
+function Wait-Save {
+    Start-Sleep -Milliseconds $saveWaitMilliseconds
 }
 
 # Closes the window and returns whether the process ended with exit code 0.
 function Close-Editor($process, [IntPtr] $handle) {
     [void][W]::PostMessageA($handle, 0x0010, [IntPtr]::Zero, [IntPtr]::Zero)   # WM_CLOSE
+    $exited = $process.WaitForExit(2000)
+    if (-not $exited) { Stop-Process -Id $process.Id }
+    return ($exited -and $process.ExitCode -eq 0)
+}
+
+# Closes the window as the title bar's close button does: DefWindowProc sends
+# WM_CLOSE to the window procedure, and the editor's message loop never sees it.
+function Close-EditorFromSystemMenu($process, [IntPtr] $handle) {
+    [void][W]::PostMessageA($handle, 0x0112, [IntPtr]0xF060, [IntPtr]::Zero)   # WM_SYSCOMMAND SC_CLOSE
     $exited = $process.WaitForExit(2000)
     if (-not $exited) { Stop-Process -Id $process.Id }
     return ($exited -and $process.ExitCode -eq 0)
@@ -175,19 +193,24 @@ $exited = $process.WaitForExit(2000)
 Check 'cancel at start ends process' ($exited -and $process.ExitCode -eq 0)
 if (-not $exited) { Stop-Process -Id $process.Id }
 
-# An existing file: load, edit at the end, and save with Ctrl+S.
+# An existing file: load, wait without a change, edit at the end, and wait
+# for the save.
 [System.IO.File]::WriteAllText($file, "alpha`r`nbeta")
+$loadedTime = (Get-Item $file).LastWriteTimeUtc
 $process, $handle = Start-Editor $file
 Check 'open loads bytes' (([W]::Text($handle)) -eq "alpha`r`nbeta") "[$([W]::Text($handle))]"
+Wait-Save
+Check 'open without a change does not save' ((Get-Item $file).LastWriteTimeUtc -eq $loadedTime)
 $end = [IntPtr]([W]::Text($handle).Length)
 [void][W]::SendMessageA($handle, 0x00B1, $end, $end)   # EM_SETSEL: caret to the end
 [W]::Type($handle, "`rgamma")
 Start-Sleep -Milliseconds 500
 $expected = "alpha`r`nbeta`r`ngamma"
 Check 'edit' (([W]::Text($handle)) -eq $expected) "[$([W]::Text($handle))]"
-Save-Editor $handle
-Check 'Ctrl+S writes bytes' ((Read-File $file) -ceq $expected) "[[$(Read-File $file)]]"
-Check 'Ctrl+S leaves text unchanged' (([W]::Text($handle)) -eq $expected) "[$([W]::Text($handle))]"
+Check 'no save before the pause ends' ((Read-File $file) -ceq "alpha`r`nbeta") "[[$(Read-File $file)]]"
+Wait-Save
+Check 'pause writes bytes' ((Read-File $file) -ceq $expected) "[[$(Read-File $file)]]"
+Check 'save leaves text unchanged' (([W]::Text($handle)) -eq $expected) "[$([W]::Text($handle))]"
 
 # Left, Backspace, and Delete: "xyz" with the caret after "xy" after Left;
 # Backspace removes "y" and Delete removes "z".
@@ -198,58 +221,62 @@ Check 'Ctrl+S leaves text unchanged' (([W]::Text($handle)) -eq $expected) "[$([W
 [W]::Key($handle, 0x2E)   # VK_DELETE
 Start-Sleep -Milliseconds 500
 Check 'Left, Backspace, Delete' (([W]::Text($handle)) -eq 'x') "[$([W]::Text($handle))]"
-Check 'close ends process' (Close-Editor $process $handle)
+# The pause has not ended, so only the close saves "x".
+Check 'close ends process' (Close-EditorFromSystemMenu $process $handle)
+Check 'close saves the pending change' ((Read-File $file) -ceq 'x') "[[$(Read-File $file)]]"
 Remove-Item $file
 
-# A path that does not exist: the window starts empty, and Ctrl+S creates the
-# file with only the typed text.
+# A path that does not exist: the window starts empty, the file appears only
+# after a change, and holds only the typed text.
 $process, $handle = Start-Editor $missing
 Check 'missing path starts empty' (([W]::Text($handle)) -eq '') "[$([W]::Text($handle))]"
+Wait-Save
+Check 'missing path without a change creates no file' (-not (Test-Path $missing))
 [W]::Type($handle, 'new')
-Start-Sleep -Milliseconds 300
-Save-Editor $handle
-Check 'Ctrl+S creates file' ((Read-File $missing) -ceq 'new') "[[$(Read-File $missing)]]"
+Wait-Save
+Check 'pause creates file' ((Read-File $missing) -ceq 'new') "[[$(Read-File $missing)]]"
 Check 'close after create ends process' (Close-Editor $process $handle)
 Remove-Item $missing
 
-# A read-only file: CreateFileA fails, so Ctrl+S opens the file selector and
-# writes nothing. Cancel keeps the window open with the text; a second Ctrl+S
-# and a path chosen in the file selector write the text there.
+# A read-only file: CreateFileA fails, so the save after a change opens the
+# file selector and writes nothing. Cancel keeps the window open with the
+# text; the next change and a path chosen in the file selector write the text
+# there.
 [System.IO.File]::WriteAllText($file, 'locked')
 Set-ItemProperty $file -Name IsReadOnly -Value $true
 $process, $handle = Start-Editor $file
 [W]::Type($handle, 'x')
-Start-Sleep -Milliseconds 300
-[W]::Type($handle, [string][char]0x13)
 $dialog = Wait-FileSelector $process
-Check 'read-only Ctrl+S opens file selector' ($dialog -ne [IntPtr]::Zero)
+Check 'read-only save opens file selector' ($dialog -ne [IntPtr]::Zero)
 Check 'read-only file unchanged' ((Read-File $file) -ceq 'locked') "[[$(Read-File $file)]]"
 if ($dialog -ne [IntPtr]::Zero) { Cancel-FileSelector $dialog }
 Start-Sleep -Milliseconds 800
 Check 'cancel keeps window and text' ((-not $process.HasExited) -and ([W]::Find([uint32]$process.Id, '#32770') -eq [IntPtr]::Zero) -and ([W]::Text($handle)) -eq 'xlocked') "[$([W]::Text($handle))]"
-[W]::Type($handle, [string][char]0x13)
+[W]::Type($handle, 'y')
 $dialog = Wait-FileSelector $process
 if ($dialog -ne [IntPtr]::Zero) { Select-InFileSelector $dialog $chosen }
 Start-Sleep -Milliseconds 800
-Check 'file selector save writes bytes' ((Read-File $chosen) -ceq 'xlocked') "[[$(Read-File $chosen)]]"
+Check 'file selector save writes bytes' ((Read-File $chosen) -ceq 'xylocked') "[[$(Read-File $chosen)]]"
 Check 'close after file selector ends process' (Close-Editor $process $handle)
 Set-ItemProperty $file -Name IsReadOnly -Value $false
 Remove-Item $file
 if (Test-Path $chosen) { Remove-Item $chosen }
 
-# A 1,000,000-byte file loads whole and saves back unchanged.
+# A 1,000,000-byte file loads whole, and a change at its start saves it whole.
 $content = ('0123456789abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789' + "`r`n") * 13514
 $content = $content.Substring(0, 1000000)
 [System.IO.File]::WriteAllText($large, $content)
 $process, $handle = Start-Editor $large
 Check 'large file loads whole' ([W]::Text($handle).Length -eq 1000000) "[$([W]::Text($handle).Length)]"
 [System.IO.File]::WriteAllText($large, '')
-Save-Editor $handle
-Check 'large file saves whole' ((Read-File $large) -ceq $content) "[$((Read-File $large).Length)]"
+[void][W]::SendMessageA($handle, 0x00B1, [IntPtr]0, [IntPtr]0)   # EM_SETSEL: caret to the start
+[W]::Type($handle, 'Z')
+Wait-Save
+Check 'large file saves whole' ((Read-File $large) -ceq ('Z' + $content)) "[$((Read-File $large).Length)]"
 Check 'close after large file ends process' (Close-Editor $process $handle)
 Remove-Item $large
 
-# A 5,000,000-byte file is larger than the 3,145,727-byte text buffer, so the
+# A 5,000,000-byte file is larger than the 1,048,575-byte text buffer, so the
 # editor shows a message box and ends without opening it; the file is left
 # byte for byte as it was.
 $bytes = New-Object byte[] 5000000

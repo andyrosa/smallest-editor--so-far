@@ -1,24 +1,37 @@
-# Builds smallest-editor--so-far.exe from smallest-editor--so-far.s with clang from LLVM MinGW
-# (winget id MartinStorsjo.LLVM-MinGW.UCRT), then prints its size.
+# Builds smallest-editor--so-far.exe from smallest-editor--so-far.s, then prints its size.
+# -Compiler clang uses clang from LLVM MinGW (winget id MartinStorsjo.LLVM-MinGW.UCRT);
+# -Compiler gcc uses MinGW-w64 GCC, such as WinLibs (winget id
+# BrechtSanders.WinLibs.POSIX.UCRT), whose 64-bit gcc assembles 32-bit code with -m32.
 #
 # smallest-editor--so-far.s holds the whole executable, PE headers and import tables included,
-# in its .text section. clang assembles it into a COFF object, and this script
-# copies the bytes of that section to smallest-editor--so-far.exe. No linker runs.
+# in its .text section. The compiler assembles it into a COFF object, and this
+# script copies the bytes of that section to smallest-editor--so-far.exe. No linker runs.
 param(
+    [ValidateSet('clang', 'gcc')]
+    [string] $Compiler = 'clang',
     [string] $Output = (Join-Path $PSScriptRoot 'smallest-editor--so-far.exe')
 )
 $ErrorActionPreference = 'Stop'
 
-$clang = Get-Command clang -ErrorAction SilentlyContinue
-if ($null -eq $clang) {
-    throw 'clang not found on PATH. Install with: winget install --id MartinStorsjo.LLVM-MinGW.UCRT'
+$installHints = @{
+    clang = 'winget install --id MartinStorsjo.LLVM-MinGW.UCRT'
+    gcc   = 'winget install --id BrechtSanders.WinLibs.POSIX.UCRT'
+}
+$targetArguments = @{
+    clang = @('-target', 'i686-w64-mingw32')
+    gcc   = @('-m32')
+}
+$command = Get-Command $Compiler -ErrorAction SilentlyContinue
+if ($null -eq $command) {
+    throw "$Compiler not found on PATH. Install with: $($installHints[$Compiler])"
 }
 
 $source = Join-Path $PSScriptRoot 'smallest-editor--so-far.s'
 $object = [System.IO.Path]::ChangeExtension($Output, '.o')
-& $clang.Source -target i686-w64-mingw32 -c $source -o $object
-$clangExit = $LASTEXITCODE
-if ($clangExit -ne 0) { throw "clang exited with code $clangExit" }
+$compilerArguments = $targetArguments[$Compiler]
+& $command.Source @compilerArguments -c $source -o $object
+$compilerExit = $LASTEXITCODE
+if ($compilerExit -ne 0) { throw "$Compiler exited with code $compilerExit" }
 
 # The COFF object: a 20-byte file header, then one 40-byte header per section.
 # A relocation would mean an address the assembler left for a linker, so the

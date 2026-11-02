@@ -2,10 +2,11 @@
  *
  * The EDIT control supplies typing, caret movement, Backspace, and Delete
  * (R2). This file adds the window and loading and saving the file (R1): the
- * file selector (GetOpenFileNameA) chooses the file at start, Ctrl+S saves it,
- * and a save that cannot happen opens the file selector again, and the save
- * repeats with the path chosen there; Cancel keeps the window open. Cancel at
- * start ends the editor.
+ * file selector (GetOpenFileNameA) chooses the file at start, and the text is
+ * saved once it has gone DELAY milliseconds without a change, and when the
+ * window closes. A save that cannot happen opens the file selector again, and
+ * the save repeats with the path chosen there; Cancel keeps the window open,
+ * and the next change saves again. Cancel at start ends the editor.
  *
  * This file is the whole executable: clang assembles it, and the build script
  * copies the bytes of its .text section to smallest-editor--so-far.exe, with
@@ -17,6 +18,7 @@
  *
  * Registers in _Entry: edi = the frame on the stack; esi = the text buffer;
  * ebx = the path; ebp = the window. All hold their values across calls.
+ * wndproc gets the frame from the variable frame and sets the others itself.
  */
 
     IB      = 0x400000      /* ImageBase */
@@ -27,9 +29,10 @@
     WRITE   = 0x40000000    /* GENERIC_WRITE */
     STACK   = 0x400000      /* stack reserve and commit: all of it committed,
                              * so the frame needs no stack probes */
-    BUFSIZE = 0x300000      /* the text buffer, so the largest file */
+    BUFSIZE = 0x100000      /* the text buffer, so the largest file */
+    DELAY   = 1000          /* milliseconds without a change before a save */
 
-    /* The frame, at edi. It lies 3 MB below the stack top, in pages that
+    /* The frame, at edi. It lies 1 MB below the stack top, in pages that
      * nothing touched before _Entry, so it starts as zeros: the OPENFILENAMEA
      * needs only three fields set, and the path starts empty. */
     OFN     = 28            /* after the MSG at 0: OPENFILENAMEA, 76 bytes */
@@ -92,7 +95,7 @@ opt_end:
     .long code - base       /* PointerToRawData */
     .long 0, 0, 0
     .long 0xE0000060        /* code, data, execute, read, write */
-    .balign 16
+    .balign 16, 0
 code:
 
 _Entry:
@@ -151,6 +154,20 @@ _Entry:
     API CreateWindowExA
     movl %eax,%ebp
     movl %ebp,OFN+4(%edi)           /* hwndOwner for later file selectors */
+    movl %edi,IB + frame - base     /* for wndproc */
+    pushl $IB + wndproc - base
+    pushl $-4                       /* GWL_WNDPROC */
+    pushl %ebp
+    API SetWindowLongA
+    movl %eax,IB + oldproc - base
+    /* The control refuses typing past 30,000 characters until told otherwise
+     * (Windows 10 19045, 2026-11-02); the limit stops at the buffer, so the
+     * save never cuts the text short. */
+    pushl $0
+    pushl $BUFSIZE - 1
+    pushl $0xC5                     /* EM_SETLIMITTEXT */
+    pushl %ebp
+    API SendMessageA
     /* Load the text separately, preserving the path in the title bar.
      * WM_SETTEXT, not the window name: CreateWindowExA created no window
      * for a 70,000-byte name (Windows 11 26200, 2026-10-30). */
@@ -187,16 +204,61 @@ loop:
     API GetMessageA
     incl %eax                       /* nothing posts WM_QUIT, so 0 never comes */
     jz exit
-    cmpl $0x102,4(%edi)             /* WM_CHAR, made by TranslateMessage */
+    cmpl $0x113,4(%edi)             /* WM_TIMER */
     jne 2f
-    cmpl $0x13,8(%edi)              /* Ctrl+S; the control never sees it */
-    je save
+    cmpl %ebp,8(%edi)               /* the save timer, whose ID is the window */
+    jne 2f
+    call flush
+    jmp loop
 2:  pushl %edi
     API TranslateMessage
     pushl %edi
     API DispatchMessageA
+    xorl %eax,%eax
+    pushl %eax
+    pushl %eax
+    pushl $0xB8                     /* EM_GETMODIFY */
+    pushl %ebp
+    API SendMessageA
+    testl %eax,%eax
+    jz loop                         /* no change */
+    xorl %eax,%eax
+    pushl %eax                      /* the text is now unchanged */
+    pushl %eax
+    pushl $0xB9                     /* EM_SETMODIFY */
+    pushl %ebp
+    API SendMessageA
+    pushl $0                        /* no TimerProc: WM_TIMER comes to loop */
+    pushl $DELAY
+    pushl %ebp                      /* the timer ID */
+    pushl %ebp
+    API SetTimer                    /* restarts the timer if it runs */
     jmp loop
 
+/* The window procedure in front of the EDIT control's: WM_CLOSE saves first,
+ * because closing from the title bar sends WM_CLOSE without loop seeing it. */
+wndproc:
+    cmpl $0x10,8(%esp)              /* WM_CLOSE */
+    jne 1f
+    pushal
+    movl IB + frame - base,%edi
+    leal PATH(%edi),%ebx
+    leal BUF(%edi),%esi
+    movl 36(%esp),%ebp              /* the window, past pushal and the return */
+    call flush
+    popal
+1:  popl %eax                       /* the return address */
+    pushl IB + oldproc - base       /* CallWindowProcA's first argument */
+    pushl %eax
+    jmp *(IB + CallWindowProcA - base)
+
+/* Saves if the timer runs, that is if a change is not saved yet. */
+flush:
+    pushl %ebp
+    pushl %ebp
+    API KillTimer
+    testl %eax,%eax
+    jz 9f                           /* no timer: nothing to save */
 save:
     pushl %esi
     pushl $BUFSIZE
@@ -229,14 +291,14 @@ save:
     API CloseHandle
     popl %eax
     testl %eax,%eax
-    jnz loop                        /* saved */
+    jnz 9f                          /* saved */
 ask:
     leal OFN(%edi),%eax
     pushl %eax
     API GetOpenFileNameA
     testl %eax,%eax
     jnz save                        /* save to the chosen path */
-    jmp loop                        /* Cancel: the window stays open */
+9:  ret                             /* saved, or Cancel: the window stays open */
 
 /* The import directory. OriginalFirstThunk is 0, so the loader reads the
  * names from the IAT itself and then overwrites it with the addresses. */
@@ -260,6 +322,10 @@ TranslateMessage: .long h_TranslateMessage - base
 DispatchMessageA: .long h_DispatchMessageA - base
 SendMessageA:     .long h_SendMessageA - base
 MessageBoxA:      .long h_MessageBoxA - base
+SetWindowLongA:   .long h_SetWindowLongA - base
+CallWindowProcA:  .long h_CallWindowProcA - base
+SetTimer:         .long h_SetTimer - base
+KillTimer:        .long h_KillTimer - base
     .long 0
 iat_cd32:
 GetOpenFileNameA: .long h_GetOpenFileNameA - base
@@ -285,8 +351,19 @@ h_SendMessageA:     .short 0
     .asciz "SendMessageA"
 h_MessageBoxA:      .short 0
     .asciz "MessageBoxA"
+h_SetWindowLongA:   .short 0
+    .asciz "SetWindowLongA"
+h_CallWindowProcA:  .short 0
+    .asciz "CallWindowProcA"
+h_SetTimer:         .short 0
+    .asciz "SetTimer"
+h_KillTimer:        .short 0
+    .asciz "KillTimer"
 h_GetOpenFileNameA: .short 0
     .asciz "GetOpenFileNameA"
 msg:    .asciz "File too large to open"
-    .balign 16
+/* Variables for wndproc, written after the window is made. */
+frame:   .long 0
+oldproc: .long 0
+    .balign 16, 0           /* zeros: clang and gcc fill code with different no-ops */
 image_end:
