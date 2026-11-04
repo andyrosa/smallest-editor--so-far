@@ -242,17 +242,20 @@ loop:
     jmp loop
 
 /* The window procedure in front of the EDIT control's: WM_CLOSE saves first,
- * because closing from the title bar sends WM_CLOSE without loop seeing it. */
+ * because closing from the title bar sends WM_CLOSE without loop seeing it.
+ * Then it ends the process itself: the taskbar's "Close window" sends
+ * WM_CLOSE from Explorer's thread, so it runs inside loop's GetMessageA,
+ * which then waits forever for a window that no longer exists (the process
+ * kept running with no windows, Windows 11 26200, 2026-11-02). */
 wndproc:
     cmpl $0x10,8(%esp)              /* WM_CLOSE */
     jne 1f
-    pushal
     movl IB + frame - base,%edi
     leal PATH(%edi),%ebx
     leal BUF(%edi),%esi
-    movl 36(%esp),%ebp              /* the window, past pushal and the return */
+    movl 4(%esp),%ebp               /* the window, past the return */
     call flush
-    popal
+    jmp exit
 1:  popl %eax                       /* the return address */
     pushl IB + oldproc - base       /* CallWindowProcA's first argument */
     pushl %eax
