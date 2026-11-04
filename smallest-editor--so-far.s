@@ -137,12 +137,18 @@ _Entry:
     je toobig
     movb $0,(%esi,%eax)             /* the text ends in 0 */
 
-1:  xorl %eax,%eax
+    /* The desktop as hWndParent: with 0 there, the control never scrolls
+     * vertically. Page Down, EM_LINESCROLL, the wheel, and the scroll bar left
+     * line 1 at the top; with the desktop window, Page Down scrolled 59 lines.
+     * Windows 10 19045 and Windows 11 26200, 2026-11-02; evidence in
+     * Test-EditScroll.ps1 of chat e6bbb292. Why 0 stops scrolling is unknown. */
+1:  API GetDesktopWindow
+    xorl %edx,%edx
     movl $DEFAULT,%ecx
-    pushl %eax                      /* lpParam */
-    pushl %eax                      /* hInstance */
-    pushl %eax                      /* hMenu */
-    pushl %eax                      /* hWndParent */
+    pushl %edx                      /* lpParam */
+    pushl %edx                      /* hInstance */
+    pushl %edx                      /* hMenu */
+    pushl %eax                      /* hWndParent: the desktop */
     pushl %ecx                      /* nHeight */
     pushl %ecx                      /* nWidth */
     pushl %ecx                      /* y */
@@ -150,7 +156,7 @@ _Entry:
     pushl $STYLE
     pushl %ebx                      /* title: the path chosen at startup */
     pushl $IB + edit - base
-    pushl %eax                      /* dwExStyle */
+    pushl %edx                      /* dwExStyle */
     API CreateWindowExA
     movl %eax,%ebp
     movl %ebp,OFN+4(%edi)           /* hwndOwner for later file selectors */
@@ -326,6 +332,7 @@ SetWindowLongA:   .long h_SetWindowLongA - base
 CallWindowProcA:  .long h_CallWindowProcA - base
 SetTimer:         .long h_SetTimer - base
 KillTimer:        .long h_KillTimer - base
+GetDesktopWindow: .long h_GetDesktopWindow - base
     .long 0
 iat_cd32:
 GetOpenFileNameA: .long h_GetOpenFileNameA - base
@@ -359,6 +366,8 @@ h_SetTimer:         .short 0
     .asciz "SetTimer"
 h_KillTimer:        .short 0
     .asciz "KillTimer"
+h_GetDesktopWindow: .short 0
+    .asciz "GetDesktopWindow"
 h_GetOpenFileNameA: .short 0
     .asciz "GetOpenFileNameA"
 msg:    .asciz "File too large to open"

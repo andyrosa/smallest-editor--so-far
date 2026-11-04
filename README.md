@@ -4,7 +4,7 @@ This repo is vibespired by Atto, the tiny (~48 KB) terminal-based text editor ad
 
 The goal is the **smallest possible Windows text editor**, measured in bytes of the complete executable.
 
-Current size: **1152 bytes**.
+Current size: **1184 bytes**.
 
 ![Bart calls smallest-editor--so-far.exe the smallest Windows 11 editor. Homer replies: So far.](smallest-editor-so-far.jpeg)
 
