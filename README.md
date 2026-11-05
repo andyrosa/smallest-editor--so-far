@@ -51,18 +51,16 @@ Windows supplies the editing through a single built-in `EDIT` control. The progr
 
 ## Build and test
 
-Install clang from LLVM MinGW, or MinGW-w64 GCC such as WinLibs, and make sure it is on `PATH`:
+Install clang from LLVM MinGW and make sure it is on `PATH`:
 
 ```powershell
 winget install --id MartinStorsjo.LLVM-MinGW.UCRT
-winget install --id BrechtSanders.WinLibs.POSIX.UCRT
 ```
 
-Then build and test from PowerShell. The build uses clang unless `-Compiler gcc` is given:
+Then build and test from PowerShell:
 
 ```powershell
-.\Build-Editor.ps1                # clang
-.\Build-Editor.ps1 -Compiler gcc  # gcc
+.\Build-Editor.ps1
 .\Test-Editor.ps1
 ```
 
