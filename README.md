@@ -4,7 +4,7 @@ This repo is vibespired by Atto, the tiny (~48 KB) terminal-based text editor ad
 
 The goal is the **smallest possible Windows text editor**, measured in bytes of the complete executable.
 
-Current size: **1184 bytes**.
+Current size: **1136 bytes**.
 
 ![Bart calls smallest-editor--so-far.exe the smallest Windows 11 editor. Homer replies: So far.](smallest-editor-so-far.jpeg)
 
@@ -27,7 +27,7 @@ Run `smallest-editor--so-far.exe`. A file selector opens:
 - Typing a name that does not exist opens an empty window. The editor creates the file at the first save, so a new name that is never edited leaves no file behind.
 - Cancel ends the editor.
 
-The title bar shows the full path chosen at startup. A file larger than 1,048,575 bytes is refused: the editor shows an "Error" message box and ends without changing the file.
+The title bar shows the full path chosen at startup. A file larger than 1,048,575 bytes is refused without changing the file: the file selector opens again with the title "Too large", where another file can be chosen, and Cancel ends the editor.
 
 ### Edit
 
@@ -64,4 +64,4 @@ Then build and test from PowerShell:
 .\Test-Editor.ps1
 ```
 
-The build writes `smallest-editor--so-far.exe` and prints its byte count. The test script drives the editor with Win32 messages through 27 checks covering file selection, editing, saving after a pause and on close, failed-save recovery, process exit, a 1,000,000-byte file, and a 5,000,000-byte file that the editor refuses.
+The build writes `smallest-editor--so-far.exe` and prints its byte count. The test script drives the editor with Win32 messages through 28 checks covering file selection, editing, saving after a pause and on close, failed-save recovery, process exit, a 1,000,000-byte file, and a 5,000,000-byte file that the editor refuses.

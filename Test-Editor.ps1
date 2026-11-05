@@ -125,7 +125,7 @@ function Start-Editor([string] $path) {
 }
 
 # Starts the editor and chooses $path in the file selector, without waiting for
-# an EDIT window: for a file the editor refuses, a message box comes instead.
+# an EDIT window: for a file the editor refuses, the file selector opens again.
 function Start-EditorNoWindow([string] $path) {
     $process = Start-Process -FilePath $Exe -PassThru
     $dialog = Wait-FileSelector $process
@@ -137,13 +137,13 @@ function Start-EditorNoWindow([string] $path) {
     return $process
 }
 
-# The file selector and error message box both use class #32770. Wait for
-# the error caption so a closing file selector is not returned as the box.
-function Wait-MessageBox($process) {
+# Waits for a file selector with the title $title, so the closing file selector
+# that chose the path is not returned as the new one.
+function Wait-TitledFileSelector($process, [string] $title) {
     for ($attempt = 0; $attempt -lt 50; $attempt++) {
         Start-Sleep -Milliseconds 100
-        $box = [W]::Find([uint32]$process.Id, '#32770')
-        if ($box -ne [IntPtr]::Zero -and [W]::Title($box) -eq 'Error') { return $box }
+        $dialog = [W]::Find([uint32]$process.Id, '#32770')
+        if ($dialog -ne [IntPtr]::Zero -and [W]::Title($dialog) -eq $title) { Start-Sleep -Milliseconds 700; return $dialog }
         if ($process.HasExited) { break }
     }
     return [IntPtr]::Zero
@@ -277,23 +277,33 @@ Check 'close after large file ends process' (Close-Editor $process $handle)
 Remove-Item $large
 
 # A 5,000,000-byte file is larger than the 1,048,575-byte text buffer, so the
-# editor shows a message box and ends without opening it; the file is left
-# byte for byte as it was.
+# editor opens the file selector again, titled "Too large", without opening
+# it; the file is left byte for byte as it was. Another file chosen there
+# opens, and Cancel there ends the process.
 $bytes = New-Object byte[] 5000000
 for ($i = 0; $i -lt $bytes.Length; $i++) { $bytes[$i] = 65 + ($i % 26) }
 [System.IO.File]::WriteAllBytes($huge, $bytes)
 $before = (Get-FileHash $huge -Algorithm SHA256).Hash
+[System.IO.File]::WriteAllText($file, 'small')
 $process = Start-EditorNoWindow $huge
-$box = Wait-MessageBox $process
-Check 'oversized file shows message box' ($box -ne [IntPtr]::Zero)
-if ($box -ne [IntPtr]::Zero) {
-    Check 'oversized message caption' (([W]::Title($box)) -eq 'Error') "[$([W]::Title($box))]"
-    $ok = [W]::FindChild($box, 'Button', 2)   # IDOK in a message box
-    if ($ok -ne [IntPtr]::Zero) { [void][W]::PostMessageA($ok, 0x00F5, [IntPtr]::Zero, [IntPtr]::Zero) }   # BM_CLICK
+$dialog = Wait-TitledFileSelector $process 'Too large'
+Check 'oversized file reopens file selector titled Too large' ($dialog -ne [IntPtr]::Zero)
+if ($dialog -ne [IntPtr]::Zero) { Select-InFileSelector $dialog $file }
+$handle = [IntPtr]::Zero
+for ($attempt = 0; $attempt -lt 50 -and $handle -eq [IntPtr]::Zero; $attempt++) {
+    Start-Sleep -Milliseconds 100
+    $handle = [W]::Find([uint32]$process.Id, 'EDIT')
 }
-Check 'oversized file ends process' ($process.WaitForExit(2000) -and $process.ExitCode -eq 0)
+Check 'file chosen after oversized file opens' ($handle -ne [IntPtr]::Zero -and ([W]::Text($handle)) -eq 'small') "[$(if ($handle -ne [IntPtr]::Zero) { [W]::Text($handle) })]"
+if ($handle -ne [IntPtr]::Zero) { Check 'close after oversized file ends process' (Close-Editor $process $handle) }
+if (-not $process.HasExited) { Stop-Process -Id $process.Id }
+$process = Start-EditorNoWindow $huge
+$dialog = Wait-TitledFileSelector $process 'Too large'
+if ($dialog -ne [IntPtr]::Zero) { Cancel-FileSelector $dialog }
+Check 'cancel after oversized file ends process' ($process.WaitForExit(2000) -and $process.ExitCode -eq 0)
 if (-not $process.HasExited) { Stop-Process -Id $process.Id }
 Check 'oversized file unchanged' ((Get-FileHash $huge -Algorithm SHA256).Hash -eq $before)
 Remove-Item $huge
+Remove-Item $file
 
 if ($failures -ne 0) { throw "$failures check(s) failed" }

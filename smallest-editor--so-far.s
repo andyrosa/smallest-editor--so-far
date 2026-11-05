@@ -62,7 +62,10 @@ pe:
     .ascii "PE\0\0"
     .short 0x14C            /* Machine: i386 */
     .short 1                /* NumberOfSections */
-    .long 0, 0, 0           /* TimeDateStamp, symbols */
+/* TimeDateStamp and the symbol fields, which the loader ignores, hold the file
+ * selector's title for a file too large to open. */
+toolarge: .asciz "Too large"
+    .byte 0, 0
     .short opt_end - opt    /* SizeOfOptionalHeader */
     .short 0x103            /* relocations stripped, executable, 32-bit */
 opt:
@@ -106,6 +109,7 @@ _Entry:
     movb $76,OFN(%edi)              /* lStructSize */
     movl %ebx,OFN+28(%edi)          /* lpstrFile */
     movb $1,OFN+33(%edi)            /* nMaxFile = 256 */
+open:
     leal OFN(%edi),%eax
     pushl %eax
     API GetOpenFileNameA
@@ -144,6 +148,8 @@ _Entry:
      * Test-EditScroll.ps1 of chat e6bbb292. Why 0 stops scrolling is unknown. */
 1:  API GetDesktopWindow
     xorl %edx,%edx
+    movl %edx,OFN+48(%edi)          /* lpstrTitle: the default for later
+                                     * file selectors */
     movl $DEFAULT,%ecx
     pushl %edx                      /* lpParam */
     pushl %edx                      /* hInstance */
@@ -193,13 +199,8 @@ exit:
                                      * 26200, 2026-10-30) */
 
 toobig:
-    xorl %eax,%eax
-    pushl %eax                      /* MB_OK */
-    pushl %eax                      /* no caption: Windows shows "Error" */
-    pushl $IB + msg - base
-    pushl %eax                      /* no owner */
-    API MessageBoxA
-    jmp exit
+    movl $IB + toolarge - base,OFN+48(%edi) /* lpstrTitle */
+    jmp open                        /* choose again; Cancel ends */
 
 loop:
     xorl %eax,%eax
@@ -330,7 +331,6 @@ GetMessageA:      .long h_GetMessageA - base
 TranslateMessage: .long h_TranslateMessage - base
 DispatchMessageA: .long h_DispatchMessageA - base
 SendMessageA:     .long h_SendMessageA - base
-MessageBoxA:      .long h_MessageBoxA - base
 SetWindowLongA:   .long h_SetWindowLongA - base
 CallWindowProcA:  .long h_CallWindowProcA - base
 SetTimer:         .long h_SetTimer - base
@@ -359,8 +359,6 @@ h_DispatchMessageA: .short 0
     .asciz "DispatchMessageA"
 h_SendMessageA:     .short 0
     .asciz "SendMessageA"
-h_MessageBoxA:      .short 0
-    .asciz "MessageBoxA"
 h_SetWindowLongA:   .short 0
     .asciz "SetWindowLongA"
 h_CallWindowProcA:  .short 0
@@ -373,7 +371,6 @@ h_GetDesktopWindow: .short 0
     .asciz "GetDesktopWindow"
 h_GetOpenFileNameA: .short 0
     .asciz "GetOpenFileNameA"
-msg:    .asciz "File too large to open"
 /* Variables for wndproc, written after the window is made. */
 frame:   .long 0
 oldproc: .long 0
