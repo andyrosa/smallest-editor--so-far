@@ -17,7 +17,7 @@
  * resolves, so the object has no relocations.
  *
  * Registers in _Entry: edi = the frame on the stack; esi = the text buffer;
- * ebx = the path; ebp = the window. All hold their values across calls.
+ * ebx = the address of the SendMessageA import slot; ebp = the window. All hold their values across calls.
  * wndproc gets the frame from the variable frame and sets the others itself.
  */
 
@@ -29,7 +29,8 @@
     WRITE   = 0x40000000    /* GENERIC_WRITE */
     STACK   = 0x400000      /* stack reserve and commit: all of it committed,
                              * so the frame needs no stack probes */
-    BUFSIZE = 0x100000      /* the text buffer, so the largest file */
+    MAXFILE = 0x100000      /* accept up to and including 1 MiB */
+    BUFSIZE = MAXFILE + 1   /* terminating NUL, or first excess byte on read */
     DELAY   = 1000          /* milliseconds without a change before a save */
 
     /* The frame, at edi. It lies 1 MB below the stack top, in pages that
@@ -39,10 +40,11 @@
     COUNT   = 104           /* the bytes read or written */
     PATH    = 108           /* the path, 256 bytes */
     BUF     = 364           /* the text */
-    FRAME   = BUF + BUFSIZE
+    FRAME   = BUF + ((BUFSIZE + 15) & -16)
 
+    /* Center calls on the most frequent import. Other slots fit in disp8. */
     .macro API name
-    call *(IB + \name - base)
+    call *(\name\()_index - SendMessageA_index)(%ebx)
     .endm
 
     .text
@@ -50,22 +52,22 @@ base:
 /* The DOS header: the loader reads only "MZ" and e_lfanew, so the bytes
  * between them hold strings. */
     .ascii "MZ"
+h_ReadFile: .short 0
+    .asciz "ReadFile"
 n_k32:  .asciz "kernel32.dll"
 n_u32:  .asciz "user32.dll"
 n_cd32: .asciz "comdlg32.dll"
-edit:   .asciz "EDIT"
-h_ReadFile: .short 0
-    .asciz "ReadFile"
+toolarge: .asciz "Too large"
     .org 0x3C
     .long pe - base         /* e_lfanew */
 pe:
     .ascii "PE\0\0"
     .short 0x14C            /* Machine: i386 */
     .short 1                /* NumberOfSections */
-/* TimeDateStamp and the symbol fields, which the loader ignores, hold the file
- * selector's title for a file too large to open. */
-toolarge: .asciz "Too large"
-    .byte 0, 0
+/* WriteFile and its hint fit in the twelve bytes of the COFF timestamp
+ * and symbol-table fields previously used for the dialog title. */
+h_WriteFile:        .short 0
+    .asciz "WriteFile"
     .short opt_end - opt    /* SizeOfOptionalHeader */
     .short 0x103            /* relocations stripped, executable, 32-bit */
 opt:
@@ -91,7 +93,7 @@ opt:
     .long 0, 0
     .long imports - base, imports_end - imports
 opt_end:
-    .ascii ".text\0\0\0"
+edit: .ascii "EDIT\0\0\0\0"
     .long image_end - code  /* VirtualSize */
     .long code - base       /* VirtualAddress */
     .long image_end - code  /* SizeOfRawData */
@@ -101,20 +103,75 @@ opt_end:
     .balign 16, 0
 code:
 
+    /* Give each slot an assembly-time byte offset so clang can select
+     * the short x86 encoding. An unnamed slot terminates a DLL table. */
+    .macro slot name
+    .ifnb \name
+\name: .long h_\name - base
+\name\()_index = slot_offset
+    .else
+    .long 0
+    .endif
+    slot_offset = slot_offset + 4
+    .endm
+    slot_offset = 0
+/* Writable state followed by the three import address tables. */
+frame:   .long 0
+oldproc: .long 0
+iat_k32:
+    slot CreateFileA
+    slot ReadFile
+    slot WriteFile
+    slot CloseHandle
+    slot ExitProcess
+    slot
+iat_u32:
+    slot CreateWindowExA
+    slot GetMessageA
+    slot TranslateMessage
+    slot DispatchMessageA
+    slot SendMessageA
+    slot SetWindowLongA
+    slot CallWindowProcA
+    slot SetTimer
+    slot KillTimer
+    slot GetDesktopWindow
+    slot
+iat_cd32:
+    slot GetOpenFileNameA
+    slot
+
+    frame_offset = -8 - SendMessageA_index
+    oldproc_offset = -4 - SendMessageA_index
+
 _Entry:
     subl $FRAME,%esp
     movl %esp,%edi
-    leal PATH(%edi),%ebx
+    movl $IB + SendMessageA - base,%ebx
     leal BUF(%edi),%esi
     movb $76,OFN(%edi)              /* lStructSize */
-    movl %ebx,OFN+28(%edi)          /* lpstrFile */
+    leal PATH(%edi),%eax
+    movl %eax,OFN+28(%edi)          /* lpstrFile */
     movb $1,OFN+33(%edi)            /* nMaxFile = 256 */
 open:
     leal OFN(%edi),%eax
     pushl %eax
     API GetOpenFileNameA
     testl %eax,%eax
-    jz exit                         /* Cancel: nothing to edit */
+    jnz opened
+
+exit:
+    pushl $0                        /* exit code 0 */
+    API ExitProcess                 /* a return would end only this thread,
+                                     * and the file selector leaves other
+                                     * threads running (8 seen on Windows 11
+                                     * 26200, 2026-10-30) */
+
+toobig:
+    movl $IB + toolarge - base,OFN+48(%edi) /* lpstrTitle */
+    jmp open                        /* choose again; Cancel ends */
+
+opened:
 
     xorl %eax,%eax
     pushl %eax                      /* hTemplateFile */
@@ -123,10 +180,11 @@ open:
     pushl %eax                      /* lpSecurityAttributes */
     pushl $1                        /* FILE_SHARE_READ */
     pushl $DEFAULT                  /* GENERIC_READ */
-    pushl %ebx
+    pushl OFN+28(%edi)
     API CreateFileA
-    cmpl $-1,%eax                   /* INVALID_HANDLE_VALUE: a new file */
-    je 1f
+    incl %eax
+    jz 1f
+    decl %eax
     pushl %eax                      /* for CloseHandle */
     pushl $0                        /* lpOverlapped */
     leal COUNT(%edi),%ecx
@@ -160,23 +218,23 @@ open:
     pushl %ecx                      /* y */
     pushl %ecx                      /* x */
     pushl $STYLE
-    pushl %ebx                      /* title: the path chosen at startup */
+    pushl OFN+28(%edi)                      /* title: the path chosen at startup */
     pushl $IB + edit - base
     pushl %edx                      /* dwExStyle */
     API CreateWindowExA
-    movl %eax,%ebp
+    xchgl %eax,%ebp
     movl %ebp,OFN+4(%edi)           /* hwndOwner for later file selectors */
-    movl %edi,IB + frame - base     /* for wndproc */
+    movl %edi,frame_offset(%ebx)     /* for wndproc */
     pushl $IB + wndproc - base
     pushl $-4                       /* GWL_WNDPROC */
     pushl %ebp
     API SetWindowLongA
-    movl %eax,IB + oldproc - base
+    movl %eax,oldproc_offset(%ebx)
     /* The control refuses typing past 30,000 characters until told otherwise
      * (Windows 10 19045, 2026-11-02); the limit stops at the buffer, so the
      * save never cuts the text short. */
     pushl $0
-    pushl $BUFSIZE - 1
+    pushl $MAXFILE
     pushl $0xC5                     /* EM_SETLIMITTEXT */
     pushl %ebp
     API SendMessageA
@@ -189,18 +247,6 @@ open:
     pushl %ebp
     API SendMessageA
 
-    jmp loop                        /* the load falls in here */
-
-exit:
-    pushl $0                        /* exit code 0 */
-    API ExitProcess                 /* a return would end only this thread,
-                                     * and the file selector leaves other
-                                     * threads running (8 seen on Windows 11
-                                     * 26200, 2026-10-30) */
-
-toobig:
-    movl $IB + toolarge - base,OFN+48(%edi) /* lpstrTitle */
-    jmp open                        /* choose again; Cancel ends */
 
 loop:
     xorl %eax,%eax
@@ -224,7 +270,8 @@ loop:
     xorl %eax,%eax
     pushl %eax
     pushl %eax
-    pushl $0xB8                     /* EM_GETMODIFY */
+    movb $0xB8,%al
+    pushl %eax                      /* EM_GETMODIFY */
     pushl %ebp
     API SendMessageA
     testl %eax,%eax
@@ -232,7 +279,8 @@ loop:
     xorl %eax,%eax
     pushl %eax                      /* the text is now unchanged */
     pushl %eax
-    pushl $0xB9                     /* EM_SETMODIFY */
+    movb $0xB9,%al
+    pushl %eax                      /* EM_SETMODIFY */
     pushl %ebp
     API SendMessageA
     pushl $0                        /* no TimerProc: WM_TIMER comes to loop */
@@ -251,8 +299,8 @@ loop:
 wndproc:
     cmpl $0x10,8(%esp)              /* WM_CLOSE */
     jne 1f
-    movl IB + frame - base,%edi
-    leal PATH(%edi),%ebx
+    movl $IB + SendMessageA - base,%ebx
+    movl frame_offset(%ebx),%edi
     leal BUF(%edi),%esi
     movl 4(%esp),%ebp               /* the window, past the return */
     call flush
@@ -283,11 +331,12 @@ save:
     pushl %eax                      /* lpSecurityAttributes */
     pushl %eax                      /* no sharing */
     pushl $WRITE
-    pushl %ebx
+    pushl OFN+28(%edi)
     API CreateFileA
     popl %ecx                       /* the text size */
-    cmpl $-1,%eax                   /* INVALID_HANDLE_VALUE */
-    je ask
+    incl %eax
+    jz ask
+    decl %eax
     pushl %eax                      /* for CloseHandle */
     pushl $0                        /* lpOverlapped */
     leal COUNT(%edi),%edx
@@ -318,61 +367,27 @@ imports:
     .long 0, 0, 0, n_cd32 - base, iat_cd32 - base
     .long 0, 0, 0, 0, 0
 imports_end:
-iat_k32:
-CreateFileA:      .long h_CreateFileA - base
-ReadFile:         .long h_ReadFile - base
-WriteFile:        .long h_WriteFile - base
-CloseHandle:      .long h_CloseHandle - base
-ExitProcess:      .long h_ExitProcess - base
-    .long 0
-iat_u32:
-CreateWindowExA:  .long h_CreateWindowExA - base
-GetMessageA:      .long h_GetMessageA - base
-TranslateMessage: .long h_TranslateMessage - base
-DispatchMessageA: .long h_DispatchMessageA - base
-SendMessageA:     .long h_SendMessageA - base
-SetWindowLongA:   .long h_SetWindowLongA - base
-CallWindowProcA:  .long h_CallWindowProcA - base
-SetTimer:         .long h_SetTimer - base
-KillTimer:        .long h_KillTimer - base
-GetDesktopWindow: .long h_GetDesktopWindow - base
-    .long 0
-iat_cd32:
-GetOpenFileNameA: .long h_GetOpenFileNameA - base
-    .long 0
-/* Hint/name entries: a hint of 0, then the name. */
-h_CreateFileA:      .short 0
-    .asciz "CreateFileA"
-h_WriteFile:        .short 0
-    .asciz "WriteFile"
-h_CloseHandle:      .short 0
-    .asciz "CloseHandle"
-h_ExitProcess:      .short 0
-    .asciz "ExitProcess"
-h_CreateWindowExA:  .short 0
-    .asciz "CreateWindowExA"
-h_GetMessageA:      .short 0
-    .asciz "GetMessageA"
-h_TranslateMessage: .short 0
-    .asciz "TranslateMessage"
-h_DispatchMessageA: .short 0
-    .asciz "DispatchMessageA"
-h_SendMessageA:     .short 0
-    .asciz "SendMessageA"
-h_SetWindowLongA:   .short 0
-    .asciz "SetWindowLongA"
-h_CallWindowProcA:  .short 0
-    .asciz "CallWindowProcA"
-h_SetTimer:         .short 0
-    .asciz "SetTimer"
-h_KillTimer:        .short 0
-    .asciz "KillTimer"
-h_GetDesktopWindow: .short 0
-    .asciz "GetDesktopWindow"
-h_GetOpenFileNameA: .short 0
-    .asciz "GetOpenFileNameA"
-/* Variables for wndproc, written after the window is made. */
-frame:   .long 0
-oldproc: .long 0
+/* Each aligned function name borrows its hint from the preceding two
+ * bytes. The first borrows zeros from the import directory terminator.
+ * The loader compares the candidate with the full name on every lookup. */
+    .macro import_name name
+    .balign 2, 0
+h_\name = . - 2
+    .asciz "\name"
+    .endm
+    import_name CreateFileA
+    import_name CloseHandle
+    import_name ExitProcess
+    import_name CreateWindowExA
+    import_name GetMessageA
+    import_name TranslateMessage
+    import_name DispatchMessageA
+    import_name SendMessageA
+    import_name SetWindowLongA
+    import_name CallWindowProcA
+    import_name SetTimer
+    import_name KillTimer
+    import_name GetDesktopWindow
+    import_name GetOpenFileNameA
     .balign 16, 0           /* zeros: clang and gcc fill code with different no-ops */
 image_end:

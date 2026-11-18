@@ -262,21 +262,26 @@ Set-ItemProperty $file -Name IsReadOnly -Value $false
 Remove-Item $file
 if (Test-Path $chosen) { Remove-Item $chosen }
 
-# A 1,000,000-byte file loads whole, and a change at its start saves it whole.
-$content = ('0123456789abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789' + "`r`n") * 13514
-$content = $content.Substring(0, 1000000)
+# Load exactly 1 MiB, replace the first character, and save the full file.
+$line = '0123456789abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789' + "`r`n"
+$content = ($line * [int][Math]::Ceiling(1MB / $line.Length)).Substring(0, 1MB)
 [System.IO.File]::WriteAllText($large, $content)
 $process, $handle = Start-Editor $large
-Check 'large file loads whole' ([W]::Text($handle).Length -eq 1000000) "[$([W]::Text($handle).Length)]"
+# The window becomes visible before WM_SETTEXT finishes loading the file.
+for ($attempt = 0; $attempt -lt 50; $attempt++) {
+    if ([W]::SendMessageA($handle, 0x000E, [IntPtr]::Zero, [IntPtr]::Zero).ToInt32() -eq $content.Length) { break }
+    Start-Sleep -Milliseconds 100
+}
+Check '1 MiB file loads whole' (([W]::Text($handle)) -ceq $content)
 [System.IO.File]::WriteAllText($large, '')
-[void][W]::SendMessageA($handle, 0x00B1, [IntPtr]0, [IntPtr]0)   # EM_SETSEL: caret to the start
+[void][W]::SendMessageA($handle, 0x00B1, [IntPtr]0, [IntPtr]1)   # EM_SETSEL: first character
 [W]::Type($handle, 'Z')
 Wait-Save
-Check 'large file saves whole' ((Read-File $large) -ceq ('Z' + $content)) "[$((Read-File $large).Length)]"
+Check '1 MiB file saves whole' ((Read-File $large) -ceq ('Z' + $content.Substring(1)))
 Check 'close after large file ends process' (Close-Editor $process $handle)
 Remove-Item $large
 
-# A 5,000,000-byte file is larger than the 1,048,575-byte text buffer, so the
+# A 5,000,000-byte file exceeds the editor's supported size, so the
 # editor opens the file selector again, titled "Too large", without opening
 # it; the file is left byte for byte as it was. Another file chosen there
 # opens, and Cancel there ends the process.
