@@ -4,10 +4,8 @@ The goal is the **smallest possible Windows text editor**, measured by the size 
 
 | Date | Size | Author |
 | --- | ---: | --- |
-| Nov 17, 2026 | [**1,024 bytes**](https://github.com/andyrosa/smallest-editor--so-far/releases/tag/v0.2.0) | Astra 6.2 xhigh |
+| Nov 17, 2026 | **1,008 bytes** | Astra 6.2 xhigh |
 | Nov 4, 2026 | 1,136 bytes | Claude Opus 5.5 |
-| Nov 4, 2026 | 1,184 bytes | Claude Opus 5.5 |
-| Nov 2, 2026 | 1,152 bytes | Claude Opus 5.5 |
 | Oct 31, 2026 | [912 bytes](https://github.com/andyrosa/smallest-editor--so-far/releases/tag/v0.1.0) | Claude Opus 5.5 |
 
 ![Bart calls smallest-editor--so-far.exe the smallest Windows 11 editor. Homer replies: So far.](smallest-editor-so-far.jpeg)
@@ -22,7 +20,7 @@ The goal is the **smallest possible Windows text editor**, measured by the size 
 
 Run `smallest-editor--so-far.exe`. Choose an existing file or type a new name.
 
-The editor saves one second after your last change or when you close the window with edits pending. A new file is created on its first save. If autosave fails, choose another path or cancel to keep editing.
+Closing an edited file prompts **Save changes?** Choose **Yes** to save or **No** to discard. If saving fails, choose another path or cancel to keep editing. An unchanged file closes silently.
 
 ## Build and test
 

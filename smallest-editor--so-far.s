@@ -2,11 +2,9 @@
  *
  * The EDIT control supplies typing, caret movement, Backspace, and Delete
  * (R2). This file adds the window and loading and saving the file (R1): the
- * file selector (GetOpenFileNameA) chooses the file at start, and the text is
- * saved once it has gone DELAY milliseconds without a change, and when the
- * window closes. A save that cannot happen opens the file selector again, and
- * the save repeats with the path chosen there; Cancel keeps the window open,
- * and the next change saves again. Cancel at start ends the editor.
+ * file selector chooses the path. Closing an edited file prompts to save
+ * or discard changes. If saving fails, choose another path or cancel to
+ * keep editing.
  *
  * This file is the whole executable: clang assembles it, and the build script
  * copies the bytes of its .text section to smallest-editor--so-far.exe, with
@@ -31,7 +29,6 @@
                              * so the frame needs no stack probes */
     MAXFILE = 0x100000      /* accept up to and including 1 MiB */
     BUFSIZE = MAXFILE + 1   /* terminating NUL, or first excess byte on read */
-    DELAY   = 1000          /* milliseconds without a change before a save */
 
     /* The frame, at edi. It lies 1 MB below the stack top, in pages that
      * nothing touched before _Entry, so it starts as zeros: the OPENFILENAMEA
@@ -133,8 +130,7 @@ iat_u32:
     slot SendMessageA
     slot SetWindowLongA
     slot CallWindowProcA
-    slot SetTimer
-    slot KillTimer
+    slot MessageBoxA
     slot GetDesktopWindow
     slot
 iat_cd32:
@@ -172,8 +168,8 @@ toobig:
     jmp open                        /* choose again; Cancel ends */
 
 opened:
-
     xorl %eax,%eax
+    movb %al,(%esi)                 /* new path after an oversized read */
     pushl %eax                      /* hTemplateFile */
     pushl %eax                      /* dwFlagsAndAttributes */
     pushl $3                        /* OPEN_EXISTING */
@@ -257,37 +253,10 @@ loop:
     API GetMessageA
     incl %eax                       /* nothing posts WM_QUIT, so 0 never comes */
     jz exit
-    cmpl $0x113,4(%edi)             /* WM_TIMER */
-    jne 2f
-    cmpl %ebp,8(%edi)               /* the save timer, whose ID is the window */
-    jne 2f
-    call flush
-    jmp loop
-2:  pushl %edi
+    pushl %edi
     API TranslateMessage
     pushl %edi
     API DispatchMessageA
-    xorl %eax,%eax
-    pushl %eax
-    pushl %eax
-    movb $0xB8,%al
-    pushl %eax                      /* EM_GETMODIFY */
-    pushl %ebp
-    API SendMessageA
-    testl %eax,%eax
-    jz loop                         /* no change */
-    xorl %eax,%eax
-    pushl %eax                      /* the text is now unchanged */
-    pushl %eax
-    movb $0xB9,%al
-    pushl %eax                      /* EM_SETMODIFY */
-    pushl %ebp
-    API SendMessageA
-    pushl $0                        /* no TimerProc: WM_TIMER comes to loop */
-    pushl $DELAY
-    pushl %ebp                      /* the timer ID */
-    pushl %ebp
-    API SetTimer                    /* restarts the timer if it runs */
     jmp loop
 
 /* The window procedure in front of the EDIT control's: WM_CLOSE saves first,
@@ -298,25 +267,35 @@ loop:
  * kept running with no windows, Windows 11 26200, 2026-11-02). */
 wndproc:
     cmpl $0x10,8(%esp)              /* WM_CLOSE */
-    jne 1f
-    movl $IB + SendMessageA - base,%ebx
-    movl frame_offset(%ebx),%edi
-    leal BUF(%edi),%esi
-    movl 4(%esp),%ebp               /* the window, past the return */
-    call flush
-    jmp exit
-1:  popl %eax                       /* the return address */
+    je closing
+    popl %eax                       /* the return address */
     pushl IB + oldproc - base       /* CallWindowProcA's first argument */
     pushl %eax
     jmp *(IB + CallWindowProcA - base)
-
-/* Saves if the timer runs, that is if a change is not saved yet. */
-flush:
+closing:
+    pushal
+    movl $IB + SendMessageA - base,%ebx
+    movl frame_offset(%ebx),%edi
+    movl OFN+4(%edi),%ebp
+    leal BUF(%edi),%esi
+    xorl %eax,%eax
+    pushl %eax
+    pushl %eax
+    movb $0xB8,%al
+    pushl %eax
     pushl %ebp
-    pushl %ebp
-    API KillTimer
+    API SendMessageA
     testl %eax,%eax
-    jz 9f                           /* no timer: nothing to save */
+    jz exit                         /* unchanged */
+    pushl $4                        /* MB_YESNO */
+    pushl OFN+28(%edi)              /* caption: the file path */
+    pushl $IB + save_question - base
+    pushl %ebp
+    API MessageBoxA
+    cmpl $7,%eax                    /* IDNO: discard */
+    je exit
+    cmpl $6,%eax                    /* IDYES: save */
+    jne keep_editing
 save:
     pushl %esi
     pushl $BUFSIZE
@@ -350,14 +329,18 @@ save:
     API CloseHandle
     popl %eax
     testl %eax,%eax
-    jnz 9f                          /* saved */
+    jnz exit
 ask:
     leal OFN(%edi),%eax
     pushl %eax
     API GetOpenFileNameA
     testl %eax,%eax
     jnz save                        /* save to the chosen path */
-9:  ret                             /* saved, or Cancel: the window stays open */
+keep_editing:
+    popal
+    xorl %eax,%eax
+    ret $16
+
 
 /* The import directory. OriginalFirstThunk is 0, so the loader reads the
  * names from the IAT itself and then overwrites it with the addresses. */
@@ -385,9 +368,9 @@ h_\name = . - 2
     import_name SendMessageA
     import_name SetWindowLongA
     import_name CallWindowProcA
-    import_name SetTimer
-    import_name KillTimer
+    import_name MessageBoxA
     import_name GetDesktopWindow
     import_name GetOpenFileNameA
+save_question: .asciz "Save changes?"
     .balign 16, 0           /* zeros: clang and gcc fill code with different no-ops */
 image_end:
